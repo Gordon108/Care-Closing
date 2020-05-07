@@ -1,0 +1,165 @@
+---- GPW Gross and Paid Premium
+
+Declare @SCGroup VarChar(120)
+Declare @Date_1 as DateTime
+Declare @Date_2 as DateTime
+
+set @Date_1='1/1/2019'
+set @Date_2='8/31/2019'
+
+-- DROP TABLE Produksi2018V2
+--DROP TABLE TempNotes 
+--DROP TABLE GPWG
+
+-- DROP TABLE Produksi2018V2
+--IF OBJECT_ID('tempdb.dbo.#Produksi2018V2', 'U') IS NOT NULL
+ -- DROP TABLE  #Produksi2018V2; 
+
+--IF OBJECT_ID('tempdb.dbo.#TempNotes', 'U') IS NOT NULL
+ -- DROP TABLE  #TempNotes; 
+------------------------------------
+		   			    SELECT AccAss.ADMNO, 
+						sum(Case when  accass.code in ('P','U') then accass.Amount/(1-CASE WHEN PERC_DISCOUNT IS NULL THEN 0 ELSE PERC_DISCOUNT END ) else Amount_OC end) * NV.Rate as GPW_GROSS  
+						
+						into GPWG
+
+						FROM ACCEPTANCE
+							 LEFT JOIN
+								(
+									SELECT X.ANO,SUM(PREMI_M*RATE_E) AS PREMI,SUM(PREMI_ADM*RATE_E) AS PREMI_ADM, SUM(DISCOUNT_M*RATE_E) AS DISCOUNT_M,
+										   SUM(DISCOUNT_M*RATE_E)/SUM((CASE WHEN PREMI_M=0 OR PREMI_M IS NULL THEN 1 ELSE PREMI_M END)*RATE_E) AS PERC_DISCOUNT 
+											FROM
+									 
+											(
+												SELECT R1.ANO, R1.CODE,R1.RATE,P.RATE AS RATE_E,R1.DISCOUNT,R2.Currency,R2.TSI,R2.OGROSS,R2.TSI*R1.RATE*0.01 AS PREMI_M,
+													(R2.TSI*R1.RATE*0.01)*(1-(R1.DISCOUNT*0.01)) AS PREMI_ADM,(R2.TSI*R1.RATE*0.01)*(R1.DISCOUNT*0.01) AS DISCOUNT_M 
+												 
+													FROM RCOVER R1 
+															LEFT JOIN RCALC R2 ON R1.ANO=R2.ANO AND R1.CODE=R2.CODE
+															LEFT JOIN PCALC P ON R1.ANO=P.ANO AND R2.Currency=P.CURRENCY
+
+											) X
+											GROUP BY X.ANO
+								) TSI ON (TSI.ANO=Acceptance.ANO)
+							,Cover, TOC, AccAss, Admlink LEFT JOIN NVoucher NV ON (NV.VOUCHER=Admlink.VOUCHER AND NV.CURRENCY=Admlink.CURRENCY)  
+						   
+							Where 
+							Acceptance.BackDateDF=0 
+							and Acceptance.AStatus not in ('W','T') 
+							and Cover.ISType in ('I','L','C','R','T')
+							and (accass.code='P' AND accass.TYPE in ('DI', 'IC','IR','CF','JP','IX','IT'))
+							and TOC.TOC=Cover.TOC and Cover.CNO=Acceptance.CNO and AccAss.ANO=Acceptance.ANO 
+							and Admlink.AdmNo=AccAss.AdmNo 
+							and Admlink.Date between @Date_1 and @Date_2
+							--and TOC.COB='01'
+
+							Group by AccAss.ADMNO,NV.Rate
+
+
+-------------------------------------
+Select *
+
+Into Produksi2018V2 from
+(     
+      select     
+	  Branch.Name as Branch,TOC.TOC,case when Admlink.type in ('DI','CF','IC','JP','IR','IT','IX') then Admlink.type else '' end TYPE,
+	  	CASE 
+		 WHEN TOC.TOC IN ('1028','1031','1032','1033','1034') then 'TRAVEL' 
+		 WHEN TOC.TOC IN ('0203','1008') then 'HEAVY EQUIPMENT'
+		 WHEN TOC.TOC IN ('1001','1013','1014','1029') then 'PERSONAL ACCIDENT' 
+		 else COB.DESCRIPTION end as [COB],
+      CASE WHEN AdmLink.A_PolicyNo='' Then Admlink.DOCNO else AdmLink.A_PolicyNo end as POLICYNO,
+	  AdmLink.Date as ADATE,
+      AdmLink.A_SDate as SDATE,
+      AdmLink.A_EDate as EDATE,
+	  Admlink.Source as [Source ID],
+	  Profile.Name as [Source Name], 
+	  SCGroup.Description as SCGroup,
+      replace(replace(left(AdmLink.Remarks,50),char(13),' '),char(10),'') as Insured, 
+	  'IDR' as Curr,
+	  GPWG.GPW_GROSS as [GPW GROSS],
+      case when Admlink.type in ('DI','CF','IC','JP','IR','IT','IX') and Subject = 'PREMIUM' then sum((Admlink.Amount_1) * Voucher.rate) else 0 end as [GPW],
+	  case when Admlink.type in ('DI','CF','IC','JP','IR','IT','IX') and Subject = 'PREMIUM' then sum((Admlink.Amount_3) * Voucher.rate) else 0 end as [FEE],
+      case when Admlink.type in ('DI','CF','IC','JP','IR','IT','IX') and Subject = 'PREMIUM' then sum((Admlink.Amount_4) * Voucher.rate) else 0 end as [STAMP DUTY],
+      --CASE WHEN Voucher.DEBTORF=1 THEN sum((Voucher.Nominal_CC-Voucher.Diff_CC )) ELSE - sum((Voucher.Nominal_CC-Voucher.Diff_CC )) END*Voucher.RATE as PremiumAmount,                        
+      CASE WHEN Voucher.DEBTORF=1 THEN sum(Voucher.PAYMENT_CC) ELSE SUM(-Voucher.PAYMENT_CC) END*Voucher.RATE as [TOTAL PAID], 
+	  CASE WHEN (CASE WHEN Voucher.DEBTORF=1 THEN sum(Voucher.PAYMENT_CC) ELSE SUM(-Voucher.PAYMENT_CC) END*Voucher.RATE)>(CASE WHEN sum(NSL.Nominal)<>0 then sum(NSL.Nominal) else 0 end*voucher.rate)
+	       Then (CASE WHEN sum(NSL.Nominal)<>0 then sum(NSL.Nominal) else 0 end*voucher.rate) else  (CASE WHEN Voucher.DEBTORF=1 THEN sum(Voucher.PAYMENT_CC) ELSE SUM(-Voucher.PAYMENT_CC) END*Voucher.RATE)
+		   end as [Premium PAID],
+	  CASE WHEN Voucher.DEBTORF=1 THEN sum((Voucher.Nominal_CC-Voucher.Diff_CC-Voucher.Payment_CC )) ELSE - sum((Voucher.Nominal_CC-Voucher.Diff_CC-Voucher.Payment_CC)) END*Voucher.RATE as OutStanding,
+	  Admlink.VOUCHER, Voucher.PDate as [Payment Date]   
+      from MParam, admlink left join Profile on (Admlink.Source=Profile.ID) 
+	       Left Join SCGroup on (Profile.SCGroup=SCGroup.SCGroup)
+		   Left Join (Select Voucher, Nominal FROM NSL WHERE Doc_no='Premium') NSL on NSL.Voucher=admlink.VOUCHER
+		   Left Join GPWG on GPWG.ADMNO=AdmLink.ADMNO
+		   ,nVoucher Voucher, Branch, TOC, COB
+      where MParam.Type=Admlink.Type 
+      --and admlink.date between '1/1/2018' and '12/31/2018' 
+	  and Admlink.date between @Date_1 and @Date_2
+      and Admlink.type in ('DI','CF','IC','JP','IR','IT','IX') and Subject = 'PREMIUM'
+      and Voucher.Voucher=Admlink.Voucher
+	  and Admlink.BRANCH=Branch.Branch
+	  and Admlink.CODE=TOC.TOC
+	  and TOC.COB=COB.COB
+      
+	  Group by 
+      AdmLink.A_PolicyNo, AdmLink.A_SDate, AdmLink.A_EDate, AdmLink.REMARKS, AdmLink.Type, AdmLink.Subject,GPWG.GPW_GROSS,
+      Voucher.rate, Voucher.DebtorF, Branch.Name, COB.Description, Admlink.Source, Profile.Name, Admlink.VOUCHER,
+	  AdmLink.Date, Admlink.DOCNO, TOC.TOC, Voucher.PDate,SCGroup.Description--,NSL.Doc_No --,NSL.Nominal
+
+	  
+) A   
+
+GO
+-- SELECT * FROM Produksi2018V2
+-- SELECT * FROM TempNotes
+--DROP TABLE TempNotes
+-- Get Notes from latest ANO per PolicyNo
+--MAX(case when ANO=LANO THEN LANO+1 ELSE ano end) as ano 
+select A.PolicyNo, MAX(A.ANO) ANO, MIN(TSI.TSI) TSI INTO TempNotes from
+(
+      select PolicyNo, ANO, max(Atype) ATYPE  from ACCEPTANCE where POLICYNO in
+      (
+
+            select case when LEFT(PolicyNo,3) = 'FPG' OR LEFT(PolicyNo,3) = 'AI.' then LEFT(PolicyNo,20) else POLICYNO end as PolicyNo 
+            from Produksi2018V2
+      )
+      --and (ANO = LANO or LANO = -1) 
+      group by POLICYNO, ANO
+
+) A
+inner join ACCEPTANCE on acceptance.ANO = A.ANo
+LEFT join (SELECT ANO, SUM(OURSHARE*RATE) AS TSI FROM PCALC GROUP BY ANO) TSI ON (TSI.ANO=A.ANO)
+group by A.POLICYNO
+
+GO
+--
+
+Select 
+--Produksi2018V2.*, ano, --coalesce(Notes,'') as Notes, 
+--TSI --into Produksi2018V3
+
+Produksi2018V2.BRANCH, Produksi2018V2.TOC, Produksi2018V2.COB, Produksi2018V2.TYPE, ACCEPTANCE.ATYPE STATUS,
+
+--CASE WHEN TOC.COB='01' AND Coalesce(TSI,0) <50000000000 then 'TSI < 50 Milyar' 
+--	 WHEN TOC.COB='01' AND Coalesce(TSI,0) >=50000000000 then 'TSI > 50 Milyar' 
+--	 WHEN TOC.TOC IN ('0222') then ' Kendaraan Bermotor'
+--	 WHEN TOC.COB='03' then ' Pengiriman Barang' 
+--	 WHEN TOC.TOC IN ('1001','1013','1014','1029') then ' Kecelakaan Diri' 
+--	 WHEN TOC.TOC IN ('1028','1031','1032','1033','1034') then 'Perjalanan'
+--     WHEN TOC.TOC IN ('0203','1008') then ' Alat Berat'
+--     else COB.DESCRIPTION 
+--end as [MARK],
+
+Produksi2018V2.POLICYNO, Produksi2018V2.ADATE, Produksi2018V2.SDATE, Produksi2018V2.EDATE, [Source ID], [Source Name], SCGroup,Insured,
+Curr,TSI ,[GPW GROSS], GPW, [FEE],[STAMP DUTY], [TOTAL PAID], [Premium PAID], OutStanding, VOUCHER,[Payment Date]
+	  
+from Produksi2018V2 
+left join TempNotes on 
+case when LEFT(Produksi2018V2.PolicyNo,3) = 'FPG' OR LEFT(Produksi2018V2.PolicyNo,3) = 'AI.' then LEFT(Produksi2018V2.PolicyNo,20) else Produksi2018V2.POLICYNO end  = TempNotes.Policyno
+left Join TOC on Produksi2018V2.TOC=TOC.TOC
+left Join COB on TOC.COB=COB.COB
+LEFT JOIN ACCEPTANCE ON TempNotes.ANO=ACCEPTANCE.ANO
+
+where GPW<>0
+
